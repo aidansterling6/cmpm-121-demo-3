@@ -12,6 +12,11 @@
       "dom"
     ]
   },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  },
   "imports": {
     "geojson": "npm:geojson@^0.5.0",
     "leaflet": "npm:leaflet@^1.9.4",
