@@ -12,9 +12,12 @@ const SEED = "seed: 6478365827";
 const SEEDCELL = "seed: 625764525765";
 
 const ORGIN = leaflet.latLng(0, 0);
-const STARTPOS: LatLng = leaflet.latLng(36.98949379578401, -122.06277128548504);
-const CACHESPAWNRANGE = 8;
 const TILESIZE = 0.0001;
+
+const STARTPOS: LatLng = leaflet.latLng(36.98949379578401, -122.06277128548504);
+let CurrentPos: LatLng = STARTPOS;
+
+const CACHESPAWNRANGE = 8;
 
 const MINZOOM = 15;
 const MAXZOOM = 19;
@@ -32,6 +35,11 @@ interface LatLng {
 interface Cell {
   i: number;
   j: number;
+}
+
+interface bCell {
+  cell: Cell;
+  bool: boolean;
 }
 
 function LatLng_To_Cell(latlng: LatLng): Cell {
@@ -55,6 +63,11 @@ interface Cache {
   bInInventory: boolean;
 }
 
+interface bCellCach {
+  caches: Cache[];
+  bool: boolean; //if created new cache
+}
+
 const knownCaches: Map<string, Cache[]> = new Map<string, Cache[]>();
 
 function getCellKey(cell: Cell) {
@@ -67,7 +80,7 @@ function getCacheKey(cache: Cache) {
   return `${orginCell.i}:${orginCell.j}#${serial}`;
 }
 
-function getCellCaches(cell: Cell): Cache[] {
+function getCellCaches(cell: Cell): bCellCach {
   const key = getCellKey(cell);
   const knownCachData = knownCaches.get(key);
   if (!knownCachData) {
@@ -83,7 +96,7 @@ function getCellCaches(cell: Cell): Cache[] {
         });
       }
     }
-    return knownCaches.get(key)!;
+    return { caches: knownCaches.get(key)!, bool: true };
   } else {
     const cellCaches: Cache[] = [];
     for (const cache of knownCachData) {
@@ -95,12 +108,12 @@ function getCellCaches(cell: Cell): Cache[] {
       }
     }
     knownCaches.set(key, cellCaches);
-    return cellCaches;
+    return { caches: cellCaches, bool: false };
   }
 }
 
-function getCellsNearLatLng(latLng: LatLng): Cell[] {
-  const resultCells: Cell[] = [];
+function getCellsNearLatLng(latLng: LatLng): bCell[] {
+  const resultCells: bCell[] = [];
   const OrginCell: Cell = LatLng_To_Cell(latLng);
   for (
     let i = OrginCell.i - CACHESPAWNRANGE;
@@ -112,8 +125,9 @@ function getCellsNearLatLng(latLng: LatLng): Cell[] {
       j <= OrginCell.j + CACHESPAWNRANGE;
       j++
     ) {
-      if (getCellCaches({ i: i, j: j })) {
-        resultCells.push({ i: i, j: j });
+      const nearbyCaches = getCellCaches({ i: i, j: j });
+      if (nearbyCaches.caches) {
+        resultCells.push({ cell: { i: i, j: j }, bool: nearbyCaches.bool });
       }
     }
   }
@@ -199,6 +213,59 @@ function AddHTMLElement(
 const controlPanel = AddHTMLElement(app, "div", [
   { propertyPath: ["id"], value: "controlPanel" },
 ]);
+
+function updatePlayerPosition() {
+  const tmpPos = Cell_To_LatLng(LatLng_To_Cell(CurrentPos));
+  CurrentPos = {
+    lat: tmpPos.lat + TILESIZE * 0.5,
+    lng: tmpPos.lng + TILESIZE * 0.5,
+  };
+  playerMarker.setLatLng(CurrentPos);
+  map.setView(CurrentPos, map.getZoom(), { animation: true });
+  SpawnNearbyCaches();
+}
+
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "⬆️" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      CurrentPos.lat += TILESIZE;
+      updatePlayerPosition();
+    },
+  },
+]);
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "⬇️" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      CurrentPos.lat -= TILESIZE;
+      updatePlayerPosition();
+    },
+  },
+]);
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "➡️" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      CurrentPos.lng += TILESIZE;
+      updatePlayerPosition();
+    },
+  },
+]);
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "⬅️" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      CurrentPos.lng -= TILESIZE;
+      updatePlayerPosition();
+    },
+  },
+]);
+
 AddHTMLElement(controlPanel, "button", [
   { propertyPath: ["innerHTML"], value: "test" },
   {
@@ -215,7 +282,7 @@ const mapElement = AddHTMLElement(app, "div", [
 ]);
 
 const map = leaflet.map(mapElement, {
-  center: STARTPOS,
+  center: CurrentPos,
   zoom: STARTZOOM,
   minZoom: MINZOOM,
   maxZoom: MAXZOOM,
@@ -239,7 +306,7 @@ function createRectangle(cell: Cell) {
 
 function createCache(cell: Cell) {
   const rect = createRectangle(cell);
-  const cellCaches = getCellCaches(cell);
+  const cellCaches = getCellCaches(cell).caches;
 
   rect.cell = cell;
   rect.cellCaches = cellCaches;
@@ -279,14 +346,21 @@ function createCache(cell: Cell) {
 
 leaflet.tileLayer(MAPIMAGE, { maxZoom: MAXZOOM, attribution: ATTRIBUTION })
   .addTo(map);
-const NearbyCells = getCellsNearLatLng(STARTPOS);
-for (const cell of NearbyCells) {
-  createCache(cell);
+
+function SpawnNearbyCaches() {
+  const NearbyCells = getCellsNearLatLng(CurrentPos);
+  for (const cell of NearbyCells) {
+    if (cell.bool) { //if its a newly made cell
+      createCache(cell.cell);
+    }
+  }
 }
 
-const playerMarker = leaflet.marker(STARTPOS);
+const playerMarker = leaflet.marker(CurrentPos);
 playerMarker.bindTooltip("player position");
 playerMarker.addTo(map);
+
+updatePlayerPosition();
 
 function updateCoins() {
   if (CoinInventory.length === 0) {
