@@ -55,12 +55,33 @@ function Cell_To_LatLng(cell: Cell): LatLng {
     lng: ORGIN.lng + cell.j * TILESIZE,
   };
 }
-
-interface Cache {
+interface CacheData {
   orginCell: Cell;
   serial: number;
   currentCell: Cell;
   bInInventory: boolean;
+}
+interface Cache {
+  data: CacheData;
+  toMomento(): string;
+  fromMomento(momento: string): void;
+}
+
+function BuildCache(data: CacheData): Cache {
+  return {
+    data: data,
+    toMomento(): string {
+      return JSON.stringify(this.data);
+    },
+    fromMomento(momento: string) {
+      this.data = JSON.parse(momento);
+    },
+  };
+}
+
+interface bCellCachData {
+  caches: Cache[];
+  bool: boolean; //if created new cache
 }
 
 interface bCellCach {
@@ -68,7 +89,17 @@ interface bCellCach {
   bool: boolean; //if created new cache
 }
 
+//toMomento(): string;
+//fromMomento(momento: string): void;
+
 const knownCaches: Map<string, Cache[]> = new Map<string, Cache[]>();
+
+const rects: Map<string, leaflet.Rectangle[]> = new Map<
+  string,
+  leaflet.Rectangle[]
+>();
+
+const savedCaches: Map<string, string[]> = new Map<string, string[]>();
 
 function getCellKey(cell: Cell) {
   const { i, j } = cell;
@@ -76,7 +107,7 @@ function getCellKey(cell: Cell) {
 }
 
 function getCacheKey(cache: Cache) {
-  const { orginCell, serial } = cache;
+  const { orginCell, serial } = cache.data;
   return `${orginCell.i}:${orginCell.j}#${serial}`;
 }
 
@@ -88,31 +119,30 @@ function getCellCaches(cell: Cell): bCellCach {
       const CoinCount = Math.ceil(luck([cell.i, cell.j, SEED].toString()) * 5);
       knownCaches.set(key, []);
       for (let i = 0; i < CoinCount; i++) {
-        knownCaches.get(key)?.push({
+        knownCaches.get(key)?.push(BuildCache({
           orginCell: { i: cell.i, j: cell.j },
           serial: i,
           currentCell: { i: cell.i, j: cell.j },
           bInInventory: false,
-        });
+        }));
       }
     }
     return { caches: knownCaches.get(key)!, bool: true };
   } else {
-    const cellCaches: Cache[] = [];
-    for (const cache of knownCachData) {
-      if (
-        cache.currentCell.i == cell.i && cache.currentCell.j == cell.j &&
-        !cache.bInInventory
-      ) {
-        cellCaches.push(cache);
-      }
-    }
-    knownCaches.set(key, cellCaches);
-    return { caches: cellCaches, bool: false };
+    const validCaches = knownCachData.filter((cache) => {
+      return (
+        cache.data.currentCell.i === cell.i &&
+        cache.data.currentCell.j === cell.j &&
+        !cache.data.bInInventory
+      );
+    });
+    knownCaches.set(key, validCaches);
+    return { caches: validCaches, bool: false };
   }
 }
 
 function getCellsNearLatLng(latLng: LatLng): bCell[] {
+  console.log(savedCaches.size);
   const resultCells: bCell[] = [];
   const OrginCell: Cell = LatLng_To_Cell(latLng);
   for (
@@ -125,11 +155,83 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
       j <= OrginCell.j + CACHESPAWNRANGE;
       j++
     ) {
-      const nearbyCaches = getCellCaches({ i: i, j: j });
-      if (nearbyCaches.caches) {
-        resultCells.push({ cell: { i: i, j: j }, bool: nearbyCaches.bool });
+      const tmpKey = getCellKey({ i: i, j: j });
+      let bLoadedCaches = false;
+      if (savedCaches.has(tmpKey) /* && !knownCaches.has(tmpKey)*/) {
+        console.log("has save");
+        const nearbyCaches = savedCaches.get(tmpKey);
+        if (nearbyCaches && nearbyCaches.length > 0) {
+          for (const str of nearbyCaches) {
+            console.log("read string");
+            const a: Cache = BuildCache({
+              orginCell: { i: 0, j: 0 },
+              serial: 0,
+              currentCell: { i: 0, j: 0 },
+              bInInventory: false,
+            });
+            a.fromMomento(str);
+            //console.log(a);
+            if (knownCaches.has(tmpKey)) {
+              const tmpCacheArray: Cache[] | undefined = knownCaches.get(
+                tmpKey,
+              );
+              if (tmpCacheArray) {
+                tmpCacheArray.push(a);
+                console.log("add to known cache");
+              } else {
+                knownCaches.set(tmpKey, [a]);
+                console.log("add to known cache");
+              }
+            } else {
+              knownCaches.set(tmpKey, [a]);
+              console.log("add to known cache");
+            }
+          }
+          savedCaches.delete(tmpKey);
+          bLoadedCaches = true;
+          console.log("read");
+          resultCells.push({ cell: { i: i, j: j }, bool: true });
+        }
+      }
+      if (!bLoadedCaches) {
+        const nearbyCaches = getCellCaches({ i: i, j: j });
+        if (nearbyCaches.caches) {
+          resultCells.push({ cell: { i: i, j: j }, bool: nearbyCaches.bool });
+        }
       }
     }
+  }
+  const keysToDelete: string[] = [];
+  for (const tmpCaches of knownCaches.entries()) {
+    for (const tmpCache of tmpCaches[1]) {
+      const cellKey = getCellKey(tmpCache.data.currentCell);
+      if (
+        tmpCache.data.currentCell.i < OrginCell.i - CACHESPAWNRANGE ||
+        tmpCache.data.currentCell.i > OrginCell.i + CACHESPAWNRANGE ||
+        tmpCache.data.currentCell.j < OrginCell.j - CACHESPAWNRANGE ||
+        tmpCache.data.currentCell.j > OrginCell.j + CACHESPAWNRANGE
+      ) {
+        if (!savedCaches.has(cellKey)) {
+          savedCaches.set(cellKey, [tmpCache.toMomento()]);
+        } else {
+          savedCaches.get(cellKey)?.push(tmpCache.toMomento());
+        }
+        keysToDelete.push(tmpCaches[0]);
+        if (rects.has(cellKey)) {
+          const tmpRects: leaflet.Rectangle[] | undefined = rects.get(cellKey);
+          if (tmpRects) {
+            for (const tmp of tmpRects) {
+              const tmpRect: leaflet.Rectangle = tmp;
+              tmpRect.remove();
+              rects.delete(cellKey);
+            }
+          }
+        }
+      }
+    }
+  }
+  for (const key of keysToDelete) {
+    knownCaches.delete(key);
   }
   return resultCells;
 }
@@ -139,13 +241,14 @@ function collectCoin(cell: Cell, cacheIndex: number): boolean {
   if (tmpCell) {
     const cache = tmpCell[cacheIndex];
     if (
-      cache.currentCell.i == cell.i && cache.currentCell.j == cell.j &&
-      !cache.bInInventory
+      cache.data.currentCell.i == cell.i &&
+      cache.data.currentCell.j == cell.j &&
+      !cache.data.bInInventory
     ) {
       tmpCell.splice(cacheIndex, 1);
-      cache.bInInventory = true;
-      cache.currentCell.i = 0;
-      cache.currentCell.j = 0;
+      cache.data.bInInventory = true;
+      cache.data.currentCell.i = 0;
+      cache.data.currentCell.j = 0;
       CoinInventory.push(cache);
       return true;
     }
@@ -158,11 +261,11 @@ function dropCoin(cell: Cell, cacheIndex: number): boolean {
     const tmpCell: Cache[] | undefined = knownCaches.get(getCellKey(cell));
     if (tmpCell) {
       const cache = CoinInventory[cacheIndex];
-      if (cache.bInInventory) {
+      if (cache.data.bInInventory) {
         CoinInventory.splice(cacheIndex, 1);
-        cache.bInInventory = false;
-        cache.currentCell.i = cell.i;
-        cache.currentCell.j = cell.j;
+        cache.data.bInInventory = false;
+        cache.data.currentCell.i = cell.i;
+        cache.data.currentCell.j = cell.j;
         knownCaches.get(getCellKey(cell))?.push(cache);
         return true;
       }
@@ -291,6 +394,7 @@ const map = leaflet.map(mapElement, {
 });
 
 function createRectangle(cell: Cell) {
+  const cellKey = getCellKey(cell);
   const latLng = Cell_To_LatLng(cell);
   const rectangleBounds = leaflet.latLngBounds([
     [latLng.lat, latLng.lng],
@@ -301,47 +405,55 @@ function createRectangle(cell: Cell) {
   ]);
   const rect = leaflet.rectangle(rectangleBounds);
   rect.addTo(map);
+  if (rects.has(cellKey)) {
+    rects.get(cellKey)?.push(rect);
+  } else {
+    rects.set(cellKey, [rect]);
+  }
   return rect;
 }
 
 function createCache(cell: Cell) {
-  const rect = createRectangle(cell);
-  const cellCaches = getCellCaches(cell).caches;
+  const cellKey = getCellKey(cell);
+  if (!rects.has(cellKey)) {
+    const rect = createRectangle(cell);
 
-  rect.cell = cell;
-  rect.cellCaches = cellCaches;
-  rect.bindPopup(() => {
-    CurrentlyOpenCellRect = rect;
-    const popup = AddHTMLElement(app, "div", []);
-    AddHTMLElement(popup, "div", []);
-    updateCache();
-    function updateCache() {
-      popup.innerHTML = "Cache (" + cell.i + ", " + cell.j + "):";
-      for (let i = 0; i < rect.cellCaches.length; i++) {
-        AddHTMLElement(popup, "button", [
-          {
-            propertyPath: ["innerHTML"],
-            value: getCacheKey(rect.cellCaches[i]),
-          },
-          { propertyPath: ["id"], value: "poke" },
-          {
-            propertyPath: ["onclick"],
-            value: () => {
-              console.log(collectCoin(rect.cell, i));
-              updateCoins();
-              updateCache();
+    rect.cell = cell;
+    rect.bindPopup(() => {
+      CurrentlyOpenCellRect = rect;
+      const popup = AddHTMLElement(app, "div", []);
+      AddHTMLElement(popup, "div", []);
+      updateCache();
+      function updateCache() {
+        popup.innerHTML = "Cache (" + cell.i + ", " + cell.j + "):";
+        const cellCaches = knownCaches.get(getCellKey(cell)) || [];
+        for (let i = 0; i < cellCaches.length; i++) {
+          AddHTMLElement(popup, "button", [
+            {
+              propertyPath: ["innerHTML"],
+              value: getCacheKey(cellCaches[i]),
             },
-          },
-        ]);
+            { propertyPath: ["id"], value: "poke" },
+            {
+              propertyPath: ["onclick"],
+              value: () => {
+                console.log(collectCoin(cell, i));
+                updateCoins();
+                updateCache();
+              },
+            },
+          ]);
+        }
       }
-    }
-    return popup;
-  }, { autoClose: true, closeOnClick: false });
-  rect.on("popupclose", function () {
-    if (CurrentlyOpenCellRect === rect) {
-      CurrentlyOpenCellRect = undefined;
-    }
-  });
+
+      return popup;
+    }, { autoClose: true, closeOnClick: false });
+    rect.on("popupclose", function () {
+      if (CurrentlyOpenCellRect === rect) {
+        CurrentlyOpenCellRect = undefined;
+      }
+    });
+  }
 }
 
 leaflet.tileLayer(MAPIMAGE, { maxZoom: MAXZOOM, attribution: ATTRIBUTION })
@@ -350,7 +462,8 @@ leaflet.tileLayer(MAPIMAGE, { maxZoom: MAXZOOM, attribution: ATTRIBUTION })
 function SpawnNearbyCaches() {
   const NearbyCells = getCellsNearLatLng(CurrentPos);
   for (const cell of NearbyCells) {
-    if (cell.bool) { //if its a newly made cell
+    const cellKey = getCellKey(cell.cell);
+    if (!rects.has(cellKey)) {
       createCache(cell.cell);
     }
   }
@@ -363,6 +476,9 @@ playerMarker.addTo(map);
 updatePlayerPosition();
 
 function updateCoins() {
+  while (coinInventoryElement.firstChild) {
+    coinInventoryElement.removeChild(coinInventoryElement.firstChild);
+  }
   if (CoinInventory.length === 0) {
     coinInventoryElement.innerHTML = "you have no coins";
   } else if (CoinInventory.length === 1) {
