@@ -84,15 +84,20 @@ interface bCellCachData {
   bool: boolean; //if created new cache
 }
 
-interface bCellCach {
+interface bCellCache {
   caches: Cache[];
   bool: boolean; //if created new cache
+}
+
+interface CellCachePos {
+  caches: Cache[];
+  cell: Cell;
 }
 
 //toMomento(): string;
 //fromMomento(momento: string): void;
 
-const knownCaches: Map<string, Cache[]> = new Map<string, Cache[]>();
+const knownCaches: Map<string, CellCachePos> = new Map<string, CellCachePos>();
 
 const rects: Map<string, leaflet.Rectangle[]> = new Map<
   string,
@@ -111,32 +116,38 @@ function getCacheKey(cache: Cache) {
   return `${orginCell.i}:${orginCell.j}#${serial}`;
 }
 
-function getCellCaches(cell: Cell): bCellCach {
+function getCellCaches(cell: Cell): bCellCache {
   const key = getCellKey(cell);
   const knownCachData = knownCaches.get(key);
   if (!knownCachData) {
     if (luck([cell.i, cell.j, SEEDCELL].toString()) < 0.1) {
       const CoinCount = Math.ceil(luck([cell.i, cell.j, SEED].toString()) * 5);
-      knownCaches.set(key, []);
+      knownCaches.set(key, { caches: [], cell: cell });
       for (let i = 0; i < CoinCount; i++) {
-        knownCaches.get(key)?.push(BuildCache({
+        knownCaches.get(key)?.caches.push(BuildCache({
           orginCell: { i: cell.i, j: cell.j },
           serial: i,
           currentCell: { i: cell.i, j: cell.j },
           bInInventory: false,
         }));
+        if (knownCaches && knownCaches.get(key) && knownCaches.get(key)?.cell) {
+          let tmp = knownCaches.get(key)?.cell;
+          if (tmp) {
+            tmp = cell;
+          }
+        }
       }
     }
-    return { caches: knownCaches.get(key)!, bool: true };
+    return { caches: knownCaches.get(key)?.caches!, bool: true };
   } else {
-    const validCaches = knownCachData.filter((cache) => {
+    const validCaches = knownCachData.caches.filter((cache) => {
       return (
         cache.data.currentCell.i === cell.i &&
         cache.data.currentCell.j === cell.j &&
         !cache.data.bInInventory
       );
     });
-    knownCaches.set(key, validCaches);
+    knownCaches.set(key, { caches: validCaches, cell: cell });
     return { caches: validCaches, bool: false };
   }
 }
@@ -172,18 +183,18 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
             a.fromMomento(str);
             //console.log(a);
             if (knownCaches.has(tmpKey)) {
-              const tmpCacheArray: Cache[] | undefined = knownCaches.get(
+              const tmpCacheArray: CellCachePos | undefined = knownCaches.get(
                 tmpKey,
               );
               if (tmpCacheArray) {
-                tmpCacheArray.push(a);
+                tmpCacheArray.caches.push(a);
                 console.log("add to known cache");
               } else {
-                knownCaches.set(tmpKey, [a]);
+                knownCaches.set(tmpKey, { caches: [a], cell: { i: i, j: j } });
                 console.log("add to known cache");
               }
             } else {
-              knownCaches.set(tmpKey, [a]);
+              knownCaches.set(tmpKey, { caches: [a], cell: { i: i, j: j } });
               console.log("add to known cache");
             }
           }
@@ -202,9 +213,9 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
     }
   }
   const keysToDelete: string[] = [];
-  for (const tmpCaches of knownCaches.entries()) {
-    for (const tmpCache of tmpCaches[1]) {
-      const cellKey = getCellKey(tmpCache.data.currentCell);
+  for (const tmpCaches of knownCaches.values()) {
+    const cellKey = getCellKey(tmpCaches.cell);
+    for (const tmpCache of tmpCaches.caches) {
       if (
         tmpCache.data.currentCell.i < OrginCell.i - CACHESPAWNRANGE ||
         tmpCache.data.currentCell.i > OrginCell.i + CACHESPAWNRANGE ||
@@ -216,18 +227,18 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
         } else {
           savedCaches.get(cellKey)?.push(tmpCache.toMomento());
         }
-        keysToDelete.push(tmpCaches[0]);
-        if (rects.has(cellKey)) {
-          const tmpRects: leaflet.Rectangle[] | undefined = rects.get(cellKey);
-          if (tmpRects) {
-            for (const tmp of tmpRects) {
-              const tmpRect: leaflet.Rectangle = tmp;
-              tmpRect.remove();
-              rects.delete(cellKey);
-            }
-          }
-        }
+        keysToDelete.push(cellKey);
       }
+    }
+    const tmpRect: leaflet.Rectangle | undefined = rects.get(cellKey);
+    if (tmpRect) {
+      tmpRect.closePopup();
+      if (CurrentlyOpenCellRect === tmpRect) {
+        CurrentlyOpenCellRect = undefined;
+      }
+      tmpRect.off();
+      tmpRect.remove();
+      rects.delete(cellKey);
     }
   }
   for (const key of keysToDelete) {
@@ -237,7 +248,8 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
 }
 
 function collectCoin(cell: Cell, cacheIndex: number): boolean {
-  const tmpCell: Cache[] | undefined = knownCaches.get(getCellKey(cell));
+  const tmpCell: Cache[] | undefined = knownCaches.get(getCellKey(cell))
+    ?.caches;
   if (tmpCell) {
     const cache = tmpCell[cacheIndex];
     if (
@@ -258,7 +270,8 @@ function collectCoin(cell: Cell, cacheIndex: number): boolean {
 
 function dropCoin(cell: Cell, cacheIndex: number): boolean {
   if (CurrentlyOpenCellRect) {
-    const tmpCell: Cache[] | undefined = knownCaches.get(getCellKey(cell));
+    const tmpCell: Cache[] | undefined = knownCaches.get(getCellKey(cell))
+      ?.caches;
     if (tmpCell) {
       const cache = CoinInventory[cacheIndex];
       if (cache.data.bInInventory) {
@@ -266,7 +279,7 @@ function dropCoin(cell: Cell, cacheIndex: number): boolean {
         cache.data.bInInventory = false;
         cache.data.currentCell.i = cell.i;
         cache.data.currentCell.j = cell.j;
-        knownCaches.get(getCellKey(cell))?.push(cache);
+        knownCaches.get(getCellKey(cell))?.caches.push(cache);
         return true;
       }
     }
@@ -405,11 +418,7 @@ function createRectangle(cell: Cell) {
   ]);
   const rect = leaflet.rectangle(rectangleBounds);
   rect.addTo(map);
-  if (rects.has(cellKey)) {
-    rects.get(cellKey)?.push(rect);
-  } else {
-    rects.set(cellKey, [rect]);
-  }
+  rects.set(cellKey, rect);
   return rect;
 }
 
@@ -426,7 +435,8 @@ function createCache(cell: Cell) {
       updateCache();
       function updateCache() {
         popup.innerHTML = "Cache (" + cell.i + ", " + cell.j + "):";
-        const cellCaches = knownCaches.get(getCellKey(cell)) || [];
+        const cellCaches: Cache[] = knownCaches.get(getCellKey(cell))?.caches ||
+          [];
         for (let i = 0; i < cellCaches.length; i++) {
           AddHTMLElement(popup, "button", [
             {
@@ -452,6 +462,7 @@ function createCache(cell: Cell) {
       if (CurrentlyOpenCellRect === rect) {
         CurrentlyOpenCellRect = undefined;
       }
+      //let tmp: Cell = rect.cell;
     });
   }
 }
