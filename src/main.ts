@@ -13,7 +13,13 @@ const SEEDCELL = "seed: 625764525765";
 
 const ORGIN = leaflet.latLng(0, 0);
 const TILESIZE = 0.0001;
-
+const changedCacheKeys = new Set<string>();
+function markCacheChanged(cache: Cache) {
+  const cellKey = getCellKey(cache.data.currentCell);
+  changedCacheKeys.add(cellKey);
+}
+let locationHistory: LatLng[] = [];
+let bUseDeviceLocation = false;
 const STARTPOS: LatLng = leaflet.latLng(36.98949379578401, -122.06277128548504);
 let CurrentPos: LatLng = STARTPOS;
 
@@ -99,9 +105,9 @@ interface CellCachePos {
 
 const knownCaches: Map<string, CellCachePos> = new Map<string, CellCachePos>();
 
-const rects: Map<string, leaflet.Rectangle[]> = new Map<
+const rects: Map<string, leaflet.Rectangle> = new Map<
   string,
-  leaflet.Rectangle[]
+  leaflet.Rectangle
 >();
 
 const savedCaches: Map<string, string[]> = new Map<string, string[]>();
@@ -153,7 +159,7 @@ function getCellCaches(cell: Cell): bCellCache {
 }
 
 function getCellsNearLatLng(latLng: LatLng): bCell[] {
-  console.log(savedCaches.size);
+  //console.log(savedCaches.size);
   const resultCells: bCell[] = [];
   const OrginCell: Cell = LatLng_To_Cell(latLng);
   for (
@@ -262,6 +268,7 @@ function collectCoin(cell: Cell, cacheIndex: number): boolean {
       cache.data.currentCell.i = 0;
       cache.data.currentCell.j = 0;
       CoinInventory.push(cache);
+      markCacheChanged(cache);
       return true;
     }
   }
@@ -280,6 +287,7 @@ function dropCoin(cell: Cell, cacheIndex: number): boolean {
         cache.data.currentCell.i = cell.i;
         cache.data.currentCell.j = cell.j;
         knownCaches.get(getCellKey(cell))?.caches.push(cache);
+        markCacheChanged(cache);
         return true;
       }
     }
@@ -326,10 +334,6 @@ function AddHTMLElement(
   return tmpElement;
 }
 
-const controlPanel = AddHTMLElement(app, "div", [
-  { propertyPath: ["id"], value: "controlPanel" },
-]);
-
 function updatePlayerPosition() {
   const tmpPos = Cell_To_LatLng(LatLng_To_Cell(CurrentPos));
   CurrentPos = {
@@ -339,15 +343,31 @@ function updatePlayerPosition() {
   playerMarker.setLatLng(CurrentPos);
   map.setView(CurrentPos, map.getZoom(), { animation: true });
   SpawnNearbyCaches();
+  locationHistory.push(CurrentPos);
+  polyline.setLatLngs(locationHistory);
 }
-
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "🌐" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      if (bUseDeviceLocation) {
+        bUseDeviceLocation = false;
+      } else {
+        bUseDeviceLocation = true;
+      }
+    },
+  },
+]);
 AddHTMLElement(app, "button", [
   { propertyPath: ["innerHTML"], value: "⬆️" },
   {
     propertyPath: ["onclick"],
     value: () => {
-      CurrentPos.lat += TILESIZE;
-      updatePlayerPosition();
+      if (!bUseDeviceLocation) {
+        CurrentPos.lat += TILESIZE;
+        updatePlayerPosition();
+      }
     },
   },
 ]);
@@ -356,8 +376,10 @@ AddHTMLElement(app, "button", [
   {
     propertyPath: ["onclick"],
     value: () => {
-      CurrentPos.lat -= TILESIZE;
-      updatePlayerPosition();
+      if (!bUseDeviceLocation) {
+        CurrentPos.lat -= TILESIZE;
+        updatePlayerPosition();
+      }
     },
   },
 ]);
@@ -366,8 +388,10 @@ AddHTMLElement(app, "button", [
   {
     propertyPath: ["onclick"],
     value: () => {
-      CurrentPos.lng += TILESIZE;
-      updatePlayerPosition();
+      if (!bUseDeviceLocation) {
+        CurrentPos.lng += TILESIZE;
+        updatePlayerPosition();
+      }
     },
   },
 ]);
@@ -376,21 +400,23 @@ AddHTMLElement(app, "button", [
   {
     propertyPath: ["onclick"],
     value: () => {
-      CurrentPos.lng -= TILESIZE;
-      updatePlayerPosition();
+      if (!bUseDeviceLocation) {
+        CurrentPos.lng -= TILESIZE;
+        updatePlayerPosition();
+      }
+    },
+  },
+]);
+AddHTMLElement(app, "button", [
+  { propertyPath: ["innerHTML"], value: "🚮" },
+  {
+    propertyPath: ["onclick"],
+    value: () => {
+      //
     },
   },
 ]);
 
-AddHTMLElement(controlPanel, "button", [
-  { propertyPath: ["innerHTML"], value: "test" },
-  {
-    propertyPath: ["onclick"],
-    value: () => {
-      alert("you clicked the button!");
-    },
-  },
-]);
 const coinInventoryElement = AddHTMLElement(app, "div", []);
 updateCoins();
 const mapElement = AddHTMLElement(app, "div", [
@@ -405,6 +431,25 @@ const map = leaflet.map(mapElement, {
   zoomControl: true,
   scrollWheelZoom: true,
 });
+
+const polyline = leaflet.polyline(locationHistory, { color: "red" }).addTo(map);
+let deviceLocation: LatLng = CurrentPos;
+map.on("locationfound", (e: leaflet.LocationEvent) => {
+  //console.log('Location found:', e);
+  deviceLocation = e.latlng;
+});
+
+map.locate({ watch: true });
+
+function getDeviceLocation() {
+  //console.log(bUseDeviceLocation);
+  if (bUseDeviceLocation) {
+    CurrentPos = Cell_To_LatLng(LatLng_To_Cell(deviceLocation));
+    updatePlayerPosition();
+  }
+  setTimeout(getDeviceLocation, 1000);
+}
+getDeviceLocation();
 
 function createRectangle(cell: Cell) {
   const cellKey = getCellKey(cell);
@@ -422,6 +467,22 @@ function createRectangle(cell: Cell) {
   return rect;
 }
 
+function updateCache(popup: HTMLDivElement, cell: Cell) {
+  popup.innerHTML = "Cache (" + cell.i + ", " + cell.j + "):";
+  const cellCaches = knownCaches.get(getCellKey(cell))?.caches || [];
+  for (let i = 0; i < cellCaches.length; i++) {
+    const btn = document.createElement("button");
+    btn.innerHTML = getCacheKey(cellCaches[i]);
+    btn.onclick = () => {
+      const success = collectCoin(cell, i);
+      if (success) {
+        updateCoins();
+        updateCache(popup, cell);
+      }
+    };
+    popup.appendChild(btn);
+  }
+}
 function createCache(cell: Cell) {
   const cellKey = getCellKey(cell);
   if (!rects.has(cellKey)) {
@@ -430,39 +491,15 @@ function createCache(cell: Cell) {
     rect.cell = cell;
     rect.bindPopup(() => {
       CurrentlyOpenCellRect = rect;
-      const popup = AddHTMLElement(app, "div", []);
-      AddHTMLElement(popup, "div", []);
-      updateCache();
-      function updateCache() {
-        popup.innerHTML = "Cache (" + cell.i + ", " + cell.j + "):";
-        const cellCaches: Cache[] = knownCaches.get(getCellKey(cell))?.caches ||
-          [];
-        for (let i = 0; i < cellCaches.length; i++) {
-          AddHTMLElement(popup, "button", [
-            {
-              propertyPath: ["innerHTML"],
-              value: getCacheKey(cellCaches[i]),
-            },
-            { propertyPath: ["id"], value: "poke" },
-            {
-              propertyPath: ["onclick"],
-              value: () => {
-                console.log(collectCoin(cell, i));
-                updateCoins();
-                updateCache();
-              },
-            },
-          ]);
-        }
-      }
-
+      const popup = document.createElement("div");
+      updateCache(popup, rect.cell);
       return popup;
     }, { autoClose: true, closeOnClick: false });
+
     rect.on("popupclose", function () {
       if (CurrentlyOpenCellRect === rect) {
         CurrentlyOpenCellRect = undefined;
       }
-      //let tmp: Cell = rect.cell;
     });
   }
 }
@@ -481,8 +518,42 @@ function SpawnNearbyCaches() {
 }
 
 const playerMarker = leaflet.marker(CurrentPos);
+
+//loadGameState();
+
 playerMarker.bindTooltip("player position");
 playerMarker.addTo(map);
+
+function setCookie(name: string, value: string): void {
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/`;
+}
+
+function getCookie(name: string) {
+  name = name + "=";
+  const cookies = document.cookie.split(";");
+  for (let cookie of cookies) {
+    cookie = cookie.trim();
+    if (cookie.indexOf(name) === 0) {
+      return decodeURIComponent(cookie.substring(name.length));
+    }
+  }
+  return null;
+}
+function saveCookie(name: string, data: unknown): void {
+  setCookie(name, JSON.stringify(data));
+}
+
+function loadCookie<T = unknown>(key: string): T | null {
+  const cookieData = getCookie(key);
+  if (cookieData) {
+    try {
+      return JSON.parse(cookieData) as T;
+    } catch (err) {
+      console.error("Failed to parse JSON from cookie:", err);
+    }
+  }
+  return null;
+}
 
 updatePlayerPosition();
 
@@ -518,3 +589,89 @@ function updateCoins() {
     ]);
   }
 }
+
+function saveGameState() {
+  const coinInventoryData = CoinInventory.map((cache) => cache.toMomento());
+
+  for (const key of changedCacheKeys) {
+    const cellCachePos = knownCaches.get(key);
+    if (!cellCachePos) {
+      continue;
+    }
+    const serializedCaches = cellCachePos.caches.map((cache) =>
+      cache.toMomento()
+    );
+    savedCaches.set(key, serializedCaches);
+  }
+
+  const savedCachesData = Array.from(savedCaches.entries()).map(
+    ([mapKey, caches]) => {
+      return { key: mapKey, caches: caches };
+    },
+  );
+  console.log(savedCachesData);
+
+  const state = {
+    CoinInventory: coinInventoryData,
+    savedCaches: savedCachesData,
+    CurrentPos: CurrentPos,
+    locationHistory: locationHistory,
+  };
+  console.log(state);
+  saveCookie("gameState", state);
+
+  changedCacheKeys.clear();
+}
+
+function loadGameState() {
+  const state = loadCookie<{
+    CoinInventory: string[];
+    savedCaches: { key: string; caches: string[] }[];
+    CurrentPos: LatLng;
+    locationHistory: LatLng[];
+  }>("gameState");
+
+  console.log(savedCaches);
+
+  if (!state) {
+    console.warn("No saved game state found.");
+    return;
+  }
+  CoinInventory.length = 0;
+  for (const momento of state.CoinInventory) {
+    const c = BuildCache({
+      orginCell: { i: 0, j: 0 },
+      serial: 0,
+      currentCell: { i: 0, j: 0 },
+      bInInventory: false,
+    });
+    c.fromMomento(momento);
+    CoinInventory.push(c);
+  }
+
+  knownCaches.clear();
+  savedCaches.clear();
+  for (const entry of state.savedCaches) {
+    savedCaches.set(entry.key, entry.caches);
+  }
+
+  CurrentPos = state.CurrentPos;
+  locationHistory = state.locationHistory;
+
+  updatePlayerPosition();
+  updateCoins();
+}
+
+function autoSaveGame() {
+  saveGameState();
+  setTimeout(autoSaveGame, 1000);
+}
+
+function initializeGame() {
+  loadGameState();
+  updatePlayerPosition();
+  autoSaveGame();
+}
+
+// Start the game after map and UI are ready
+initializeGame();
