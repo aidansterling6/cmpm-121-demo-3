@@ -4,8 +4,7 @@ import luck from "./luck.ts";
 import "./style.css";
 import "leaflet/dist/leaflet.css";
 
-//let CoinsCollected = 0;
-const CoinInventory: Cache[] = [];
+let CoinInventory: Cache[] = [];
 let CurrentlyOpenCellRect: any;
 
 const SEED = "seed: 6478365827";
@@ -13,10 +12,16 @@ const SEEDCELL = "seed: 625764525765";
 
 const ORGIN = leaflet.latLng(0, 0);
 const TILESIZE = 0.0001;
-const changedCacheKeys = new Set<string>();
+
+interface CacheKey {
+  key: string;
+  bInInventory: boolean;
+}
+
+const changedCacheKeys = new Set<CacheKey>();
 function markCacheChanged(cache: Cache) {
   const cellKey = getCellKey(cache.data.currentCell);
-  changedCacheKeys.add(cellKey);
+  changedCacheKeys.add({ key: cellKey, bInInventory: cache.data.bInInventory });
 }
 let locationHistory: LatLng[] = [];
 let bUseDeviceLocation = false;
@@ -100,9 +105,6 @@ interface CellCachePos {
   cell: Cell;
 }
 
-//toMomento(): string;
-//fromMomento(momento: string): void;
-
 const knownCaches: Map<string, CellCachePos> = new Map<string, CellCachePos>();
 
 const rects: Map<string, leaflet.Rectangle> = new Map<
@@ -136,11 +138,9 @@ function getCellCaches(cell: Cell): bCellCache {
           currentCell: { i: cell.i, j: cell.j },
           bInInventory: false,
         }));
-        if (knownCaches && knownCaches.get(key) && knownCaches.get(key)?.cell) {
-          let tmp = knownCaches.get(key)?.cell;
-          if (tmp) {
-            tmp = cell;
-          }
+        const knownEntry = knownCaches.get(key);
+        if (knownEntry) {
+          knownEntry.cell = cell;
         }
       }
     }
@@ -157,9 +157,7 @@ function getCellCaches(cell: Cell): bCellCache {
     return { caches: validCaches, bool: false };
   }
 }
-
 function getCellsNearLatLng(latLng: LatLng): bCell[] {
-  //console.log(savedCaches.size);
   const resultCells: bCell[] = [];
   const OrginCell: Cell = LatLng_To_Cell(latLng);
   for (
@@ -174,12 +172,14 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
     ) {
       const tmpKey = getCellKey({ i: i, j: j });
       let bLoadedCaches = false;
-      if (savedCaches.has(tmpKey) /* && !knownCaches.has(tmpKey)*/) {
-        console.log("has save");
+      if (savedCaches.has(tmpKey)) {
         const nearbyCaches = savedCaches.get(tmpKey);
-        if (nearbyCaches && nearbyCaches.length > 0) {
+        if (nearbyCaches && nearbyCaches.length === 0) {
+          knownCaches.set(tmpKey, { caches: [], cell: { i: i, j: j } });
+          savedCaches.delete(tmpKey);
+          resultCells.push({ cell: { i: i, j: j }, bool: true });
+        } else if (nearbyCaches && nearbyCaches.length > 0) {
           for (const str of nearbyCaches) {
-            console.log("read string");
             const a: Cache = BuildCache({
               orginCell: { i: 0, j: 0 },
               serial: 0,
@@ -187,29 +187,18 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
               bInInventory: false,
             });
             a.fromMomento(str);
-            //console.log(a);
-            if (knownCaches.has(tmpKey)) {
-              const tmpCacheArray: CellCachePos | undefined = knownCaches.get(
-                tmpKey,
-              );
-              if (tmpCacheArray) {
-                tmpCacheArray.caches.push(a);
-                console.log("add to known cache");
-              } else {
-                knownCaches.set(tmpKey, { caches: [a], cell: { i: i, j: j } });
-                console.log("add to known cache");
-              }
-            } else {
+            if (!knownCaches.has(tmpKey)) {
               knownCaches.set(tmpKey, { caches: [a], cell: { i: i, j: j } });
-              console.log("add to known cache");
+            } else {
+              knownCaches.get(tmpKey)?.caches.push(a);
             }
           }
           savedCaches.delete(tmpKey);
           bLoadedCaches = true;
-          console.log("read");
           resultCells.push({ cell: { i: i, j: j }, bool: true });
         }
       }
+
       if (!bLoadedCaches) {
         const nearbyCaches = getCellCaches({ i: i, j: j });
         if (nearbyCaches.caches) {
@@ -221,30 +210,47 @@ function getCellsNearLatLng(latLng: LatLng): bCell[] {
   const keysToDelete: string[] = [];
   for (const tmpCaches of knownCaches.values()) {
     const cellKey = getCellKey(tmpCaches.cell);
-    for (const tmpCache of tmpCaches.caches) {
-      if (
-        tmpCache.data.currentCell.i < OrginCell.i - CACHESPAWNRANGE ||
-        tmpCache.data.currentCell.i > OrginCell.i + CACHESPAWNRANGE ||
-        tmpCache.data.currentCell.j < OrginCell.j - CACHESPAWNRANGE ||
-        tmpCache.data.currentCell.j > OrginCell.j + CACHESPAWNRANGE
-      ) {
-        if (!savedCaches.has(cellKey)) {
-          savedCaches.set(cellKey, [tmpCache.toMomento()]);
-        } else {
-          savedCaches.get(cellKey)?.push(tmpCache.toMomento());
+    let isOutOfRange = false;
+    if (tmpCaches.caches.length === 0) {
+      const outOfRange = tmpCaches.cell.i < OrginCell.i - CACHESPAWNRANGE ||
+        tmpCaches.cell.i > OrginCell.i + CACHESPAWNRANGE ||
+        tmpCaches.cell.j < OrginCell.j - CACHESPAWNRANGE ||
+        tmpCaches.cell.j > OrginCell.j + CACHESPAWNRANGE;
+
+      if (outOfRange) {
+        isOutOfRange = true;
+        savedCaches.set(cellKey, []);
+      }
+    } else {
+      for (const tmpCache of tmpCaches.caches) {
+        const outOfRange =
+          tmpCache.data.currentCell.i < OrginCell.i - CACHESPAWNRANGE ||
+          tmpCache.data.currentCell.i > OrginCell.i + CACHESPAWNRANGE ||
+          tmpCache.data.currentCell.j < OrginCell.j - CACHESPAWNRANGE ||
+          tmpCache.data.currentCell.j > OrginCell.j + CACHESPAWNRANGE;
+        if (outOfRange) {
+          isOutOfRange = true;
+          if (!savedCaches.has(cellKey)) {
+            savedCaches.set(cellKey, [tmpCache.toMomento()]);
+          } else {
+            savedCaches.get(cellKey)?.push(tmpCache.toMomento());
+          }
         }
-        keysToDelete.push(cellKey);
       }
     }
-    const tmpRect: leaflet.Rectangle | undefined = rects.get(cellKey);
-    if (tmpRect) {
-      tmpRect.closePopup();
-      if (CurrentlyOpenCellRect === tmpRect) {
-        CurrentlyOpenCellRect = undefined;
+
+    if (isOutOfRange) {
+      const tmpRect: leaflet.Rectangle | undefined = rects.get(cellKey);
+      if (tmpRect) {
+        tmpRect.closePopup();
+        if (CurrentlyOpenCellRect === tmpRect) {
+          CurrentlyOpenCellRect = undefined;
+        }
+        tmpRect.off();
+        tmpRect.remove();
+        rects.delete(cellKey);
       }
-      tmpRect.off();
-      tmpRect.remove();
-      rects.delete(cellKey);
+      keysToDelete.push(cellKey);
     }
   }
   for (const key of keysToDelete) {
@@ -265,8 +271,6 @@ function collectCoin(cell: Cell, cacheIndex: number): boolean {
     ) {
       tmpCell.splice(cacheIndex, 1);
       cache.data.bInInventory = true;
-      cache.data.currentCell.i = 0;
-      cache.data.currentCell.j = 0;
       CoinInventory.push(cache);
       markCacheChanged(cache);
       return true;
@@ -412,8 +416,34 @@ AddHTMLElement(app, "button", [
   {
     propertyPath: ["onclick"],
     value: () => {
-      //
+      if (
+        prompt("Are you sure you want to delete progress? [yes]/[no]") === "yes"
+      ) {
+        rects.clear();
+        knownCaches.clear();
+        savedCaches.clear();
+        CoinInventory = [];
+        document.cookie = "";
+        map.eachLayer((layer: leaflet.layer) => {
+          if (layer instanceof leaflet.Rectangle) {
+            layer.remove();
+          }
+        });
+        localStorage.clear();
+        CurrentPos = STARTPOS;
+        locationHistory = [];
+        updateCoins();
+        console.log(CoinInventory);
+        updatePlayerPosition();
+      }
     },
+  },
+]);
+AddHTMLElement(app, "div", [
+  {
+    propertyPath: ["innerHTML"],
+    value:
+      "click rectangles to open them, click on coins to move them. you have to  have a cell open to drop a coin there. right click one of your coins to go to its start",
   },
 ]);
 
@@ -435,14 +465,12 @@ const map = leaflet.map(mapElement, {
 const polyline = leaflet.polyline(locationHistory, { color: "red" }).addTo(map);
 let deviceLocation: LatLng = CurrentPos;
 map.on("locationfound", (e: leaflet.LocationEvent) => {
-  //console.log('Location found:', e);
   deviceLocation = e.latlng;
 });
 
 map.locate({ watch: true });
 
 function getDeviceLocation() {
-  //console.log(bUseDeviceLocation);
   if (bUseDeviceLocation) {
     CurrentPos = Cell_To_LatLng(LatLng_To_Cell(deviceLocation));
     updatePlayerPosition();
@@ -519,43 +547,8 @@ function SpawnNearbyCaches() {
 
 const playerMarker = leaflet.marker(CurrentPos);
 
-//loadGameState();
-
 playerMarker.bindTooltip("player position");
 playerMarker.addTo(map);
-
-function setCookie(name: string, value: string): void {
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/`;
-}
-
-function getCookie(name: string) {
-  name = name + "=";
-  const cookies = document.cookie.split(";");
-  for (let cookie of cookies) {
-    cookie = cookie.trim();
-    if (cookie.indexOf(name) === 0) {
-      return decodeURIComponent(cookie.substring(name.length));
-    }
-  }
-  return null;
-}
-function saveCookie(name: string, data: unknown): void {
-  setCookie(name, JSON.stringify(data));
-}
-
-function loadCookie<T = unknown>(key: string): T | null {
-  const cookieData = getCookie(key);
-  if (cookieData) {
-    try {
-      return JSON.parse(cookieData) as T;
-    } catch (err) {
-      console.error("Failed to parse JSON from cookie:", err);
-    }
-  }
-  return null;
-}
-
-updatePlayerPosition();
 
 function updateCoins() {
   while (coinInventoryElement.firstChild) {
@@ -570,6 +563,7 @@ function updateCoins() {
       " coins";
   }
   for (let i = 0; i < CoinInventory.length; i++) {
+    const tmpStart: LatLng = Cell_To_LatLng(CoinInventory[i].data.orginCell);
     AddHTMLElement(coinInventoryElement, "button", [
       { propertyPath: ["innerHTML"], value: getCacheKey(CoinInventory[i]) },
       { propertyPath: ["id"], value: "poke" },
@@ -586,6 +580,13 @@ function updateCoins() {
           updateCoins();
         },
       },
+      {
+        propertyPath: ["oncontextmenu"],
+        value: () => {
+          CurrentPos = tmpStart;
+          updatePlayerPosition();
+        },
+      },
     ]);
   }
 }
@@ -594,14 +595,14 @@ function saveGameState() {
   const coinInventoryData = CoinInventory.map((cache) => cache.toMomento());
 
   for (const key of changedCacheKeys) {
-    const cellCachePos = knownCaches.get(key);
+    const cellCachePos = knownCaches.get(key.key);
     if (!cellCachePos) {
       continue;
     }
     const serializedCaches = cellCachePos.caches.map((cache) =>
       cache.toMomento()
     );
-    savedCaches.set(key, serializedCaches);
+    savedCaches.set(key.key, serializedCaches);
   }
 
   const savedCachesData = Array.from(savedCaches.entries()).map(
@@ -609,7 +610,6 @@ function saveGameState() {
       return { key: mapKey, caches: caches };
     },
   );
-  console.log(savedCachesData);
 
   const state = {
     CoinInventory: coinInventoryData,
@@ -617,26 +617,31 @@ function saveGameState() {
     CurrentPos: CurrentPos,
     locationHistory: locationHistory,
   };
-  console.log(state);
-  saveCookie("gameState", state);
+  localStorage.setItem("gameState", JSON.stringify(state));
 
   changedCacheKeys.clear();
 }
 
 function loadGameState() {
-  const state = loadCookie<{
+  const str: string | null = localStorage.getItem("gameState");
+
+  if (!str) {
+    console.warn("No saved game string found.");
+    return;
+  }
+
+  const state: {
     CoinInventory: string[];
     savedCaches: { key: string; caches: string[] }[];
     CurrentPos: LatLng;
     locationHistory: LatLng[];
-  }>("gameState");
-
-  console.log(savedCaches);
+  } = JSON.parse(str);
 
   if (!state) {
     console.warn("No saved game state found.");
     return;
   }
+
   CoinInventory.length = 0;
   for (const momento of state.CoinInventory) {
     const c = BuildCache({
@@ -651,14 +656,18 @@ function loadGameState() {
 
   knownCaches.clear();
   savedCaches.clear();
-  for (const entry of state.savedCaches) {
-    savedCaches.set(entry.key, entry.caches);
+  for (let i = 0; i < state.savedCaches.length; i++) {
+    const entry = state.savedCaches[i];
+    if (entry.caches.length > 0) {
+      savedCaches.set(entry.key, entry.caches);
+    } else {
+      savedCaches.set(entry.key, []);
+    }
   }
 
   CurrentPos = state.CurrentPos;
   locationHistory = state.locationHistory;
 
-  updatePlayerPosition();
   updateCoins();
 }
 
@@ -673,5 +682,4 @@ function initializeGame() {
   autoSaveGame();
 }
 
-// Start the game after map and UI are ready
 initializeGame();
